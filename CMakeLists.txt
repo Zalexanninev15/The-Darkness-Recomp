@@ -91,6 +91,8 @@ add_custom_command(OUTPUT "${DARK_SHADER_DIR}/engine_world_fragments.generated.h
         Darkness/System/Gl/ARB_fragment_program/XRShader_FP20_NDS.fp
         Darkness/System/Gl/ARB_fragment_program/WClientMod_DV5_0.fp
         Darkness/System/Gl/ARB_fragment_program/WClientMod_DV5_1.fp
+        Darkness/System/Gl/ARB_fragment_program/WClientMod_OW1_1.fp
+        Darkness/System/Gl/ARB_fragment_program/WClientMod_OW1_2.fp
         Darkness/System/Gl/ARB_fragment_program/XRShader_MotionMap.fp Darkness/System/Xenon/FPInclude_Xenon.xrg
         Darkness/System/Gl/ARB_fragment_program/GUIFadeToWhite.fp
         Darkness/System/Gl/ARB_fragment_program/XRShader_FP20_LFM.fp
@@ -204,7 +206,8 @@ if(BUILD_TESTING)
     add_test(NAME WorldRendererWarpContract COMMAND WorldRendererTests --warp)
     add_test(NAME WorldVertexPreparationContract COMMAND WorldRendererTests --cpu-only)
     set_tests_properties(WorldVertexPreparationContract PROPERTIES TIMEOUT 30)
-    set_tests_properties(WorldRendererContract WorldRendererWarpContract PROPERTIES TIMEOUT 60)
+    # Allow cold shader compilation for the expanded Other World effect checks.
+    set_tests_properties(WorldRendererContract WorldRendererWarpContract PROPERTIES TIMEOUT 120)
     add_executable(WorldTextureBindingTests tests/world_texture_binding_tests.cpp)
     target_link_libraries(WorldTextureBindingTests PRIVATE DarkRuntime)
     stage_dark_xma(WorldTextureBindingTests)
