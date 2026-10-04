@@ -38,25 +38,15 @@ into Linux storage. Rerun SetupLinux.cmd to update without replacing Linux saves
 See STEAM_DECK.md for prerequisites, options and the verified test scope.
 Steam Deck gameplay and performance are not verified. The opening Linux scene
 rendered, but camera movement and tutorial completion were not confirmed.
-
-CHECKING YOUR GAME VERSION
-Open Darkness in File Explorer, type powershell into the address bar, and run:
-
-   Get-FileHash .\default.xex -Algorithm SHA256 | Format-List
-
-Expected original default.xex SHA-256 (uppercase/lowercase does not matter):
-  aace35a8f9bcdc7f28aeab9ff8cf3bdf200353f5c83705f6284487347acb3c5f
-
-The tested dump reports Title ID 545407EE, Media ID 0F213645, version 0.0.0.1,
-and All Regions. USA/Canada/international labels alone do not prove a match.
-The original hash must match this build. If it differs, report the hash and
-your disc revision. Share only those details, not the game files.
-Previously published releases may require prepared files; use a build containing
-the original-file loader. Existing _uncrypted.xex and basefile.exe are not read.
+This release checks the supported The Darkness revision automatically at launch.
+Other Xbox games and updated executables need their own port; changing a hash
+will not add support.
 
 CONTROLS
 Click inside the game to use the mouse. Press F1 for the controls guide.
 F2 toggles mouse capture. Escape pauses and releases the mouse.
+Click menu choices with the released cursor. Remap gameplay keys in
+Options > Controls > Keyboard bindings. Exit Game is in the main/pause menu.
 Alt+Enter switches fullscreen/windowed. Controllers are supported.
 Change graphics options and language in Options > Video Settings, or use
 LaunchWithSettings.cmd before starting the game. Both save to the same settings
@@ -69,8 +59,11 @@ folder, and DarkRecomp.settings.ini. They contain your game, progress, and
 settings, and are not supplied or overwritten by this release.
 
 IF IT DOESN'T START
-- Extract the whole ZIP. Keep Launch.cmd and build_native together.
+- Extract the whole ZIP. Keep both launchers and build_native together.
 - If the launcher lists missing files, check step 2 above.
+- If the game reports "default.xex differs from the supported AOT revision",
+  your dump uses a different revision or a modified executable. Include your
+  disc revision and the runtime.log below when reporting it. Do not post game files.
 - If Windows reports a missing DLL, extract the whole release again.
 - If the game closes after launch, look in build_native\run for the newest
   desktop-* folder and its runtime.log. Include that log when reporting the

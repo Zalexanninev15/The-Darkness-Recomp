@@ -11,7 +11,8 @@ import re
 from compile_vertex_template import ASSETS, parse
 
 MODES = {'texcoord': 0, 'linear': 1, 'void': 4, 'shadowvolume2': 7, 'mspos': 8, 'constant': 9,
-         'wspos': 10, 'env': 13, 'LightField': 17, 'bumpcubeenv': 18, 'tslv': 20, 'depthoffset': 22, 'Lighting_Nonormal': 16}
+         'wspos': 10, 'normalmap': 11, 'env': 13, 'LightField': 17, 'bumpcubeenv': 18,
+         'tslv': 20, 'depthoffset': 22, 'tang_u': 23, 'tang_v': 24, 'Lighting_Nonormal': 16}
 WORLD_ASSETS = ASSETS | {'System/Xenon/ProgramCache.xpc':
     'e5f5d6a29761cf884a11655911d3affcbb6024e59a5f7fb2c592a675a081966b'}
 
@@ -37,6 +38,13 @@ def condition(name):
         # Cache 18/250/253/423: stage1 transforms the post-skin position by
         # c12..14 with three DP4s and supplies W from c8.y (0/4/8 weights).
         if m[2] == 'wspos' and m[1] != '1':
+            return False
+        # Original Water/CubeWater builders 825B51B0/825B5C90 and cache
+        # 2/438/439 export normal, U tangent and V tangent at stages 3/4/5.
+        # These branches move the prepared R9/R0/R1 basis unchanged; texture
+        # matrices still apply through the original common output branch.
+        if m[2] in ('normalmap', 'tang_u', 'tang_v') and m[1] != {
+                'normalmap': '3', 'tang_u': '4', 'tang_v': '5'}[m[2]]:
             return False
         # Original cache37/50/75/144/145/164/165/368/369 establish
         # stage0 depthoffset, including conversion and texture-matrix forms.
@@ -145,7 +153,8 @@ VertexOutput vertexMain(VertexInput input) {
                   'constant_mode9_stages': [3, 4, 5],
                   'shadowvolume2_mode7_stages': [0],
                   'wspos_mode10_stages': [1],
-                  'cache_evidence_records': [9, 13, 18, 23, 26, 37, 50, 75, 97, 144, 145, 164, 165, 240, 250, 253, 275, 276, 283, 323, 324, 325, 326, 327, 328, 368, 369, 408, 419, 423],
+                  'water_basis_stages': {'normalmap': [3], 'tang_u': [4], 'tang_v': [5]},
+                  'cache_evidence_records': [2, 9, 13, 18, 23, 26, 37, 50, 75, 97, 144, 145, 164, 165, 240, 250, 253, 275, 276, 283, 323, 324, 325, 326, 327, 328, 368, 369, 408, 419, 423, 438, 439],
                   'instructions': retained}
 
 

@@ -4,6 +4,22 @@ static double otherworldHalf(uint16_t value) {
     const unsigned exponent=(value>>10)&31,mantissa=value&1023;
     return std::ldexp(double(exponent?1024+mantissa:mantissa),int(exponent?exponent:1)-25)*(value&0x8000?-1:1);
 }
+// Synthetic format54 sources first write FP16 surfaces, then resolve to
+// RGB10/alpha2. Model both roundings independently of the renderer's helpers.
+static double otherworldResolved54(double value,unsigned lane) {
+    value=double(float(value));
+    if(value!=0) {
+        int exponent=0;std::frexp(value,&exponent);
+        const double quantum=std::ldexp(1.0,(std::max)(exponent-11,-24));
+        const double units=value/quantum;
+        double rounded=std::floor(units);const double fraction=units-rounded;
+        if(fraction>.5 || (fraction==.5 && std::fmod(rounded,2.0)!=0))++rounded;
+        value=rounded*quantum;
+    }
+    const double maximum=lane==3?3.0:1023.0;
+    const double code=std::round((std::clamp)(value,0.0,1.0)*maximum);
+    return double(float(code/maximum));
+}
 static std::shared_ptr<StoredGeometry> otherworldQuad(bool atlas) {
     auto geometry=std::make_shared<StoredGeometry>();
     geometry->vertexCount=4;geometry->stride=36;geometry->formats[0]=3;
@@ -79,7 +95,8 @@ static void otherworldCompositeContract(WorldRendererD3D11& renderer,unsigned sc
         const unsigned quadrant=(y>=height*scale/2?2:0)+(x>=width*scale/2?1:0);
         uint16_t rgba[4];std::memcpy(rgba,pixels.data()+(size_t(y)*width*scale+x)*8,8);
         for(unsigned lane=0;lane<4;++lane) {
-            const double expected=(std::max)(0,int(scene[quadrant][lane])-int(masks[quadrant][lane]))/255.0;
+            const double expected=(std::max)(0.0,otherworldResolved54(scene[quadrant][lane]/255.0,lane)-
+                otherworldResolved54(masks[quadrant][lane]/255.0,lane));
             const double actual=otherworldHalf(rgba[lane]);
             if(!std::isfinite(actual) || std::abs(actual-expected)>.002) {
                 std::fprintf(stderr,"OtherworldComposite scale=%u pixel=%u,%u lane=%u actual=%g expected=%g\n",
@@ -185,7 +202,8 @@ static void otherworldGrainContract(WorldRendererD3D11& renderer,unsigned scale)
                 const double sv=v+dv*perturb[pair][lane+1]/height;
                 stable&=std::abs(su-.5)>.0005 && std::abs(sv-.5)>.0005;
                 const auto& texel=scene[(sv>=.5?2:0)+(su>=.5?1:0)];
-                const double intensity=(texel[0]+2.0*texel[1]+texel[2])/(4*255.0);
+                const double intensity=(otherworldResolved54(texel[0]/255.0,0)+
+                    2*otherworldResolved54(texel[1]/255.0,1)+otherworldResolved54(texel[2]/255.0,2))/4;
                 strength+=std::pow((std::clamp)(1-intensity*double(grain.fragmentConstants[1][3]),0.0,1.0),16);
             }
             if(!stable)continue; // Point-sample boundaries are sensitive to reciprocal rounding.
@@ -195,7 +213,8 @@ static void otherworldGrainContract(WorldRendererD3D11& renderer,unsigned scale)
             std::memcpy(mask,maskPixels.data()+offset,8);std::memcpy(final,finalPixels.data()+offset,8);
             for(unsigned lane=0;lane<4;++lane) {
                 const double maskExpected=lane==3?1:expectedMask;
-                const double finalExpected=(std::max)(0.0,scene[quadrant][lane]/255.0-maskExpected);
+                const double finalExpected=(std::max)(0.0,otherworldResolved54(scene[quadrant][lane]/255.0,lane)-
+                    otherworldResolved54(maskExpected,lane));
                 const double actualMask=otherworldHalf(mask[lane]),actualFinal=otherworldHalf(final[lane]);
                 if(!std::isfinite(actualMask) || !std::isfinite(actualFinal) ||
                     std::abs(actualMask-maskExpected)>.003 || std::abs(actualFinal-finalExpected)>.003) {
@@ -213,11 +232,152 @@ static void otherworldGrainContract(WorldRendererD3D11& renderer,unsigned scale)
         "OW1 grain fixture failed to exercise visible noise and suppressed/partial/full distance fades");
     std::printf("OtherworldGrain%u: %u mask/final RGBA oracle checks; world-position noise, Xenon depth, near/partial/full fades and resolved two-stage alpha.\n",scale,checks);
 }
+// Captured sewer draws use a much stronger 1/PrevLevels than the varied-noise
+// fixture above. Uniform scenes give an independent closed-form oracle while
+// retaining the retail HDR resolve/fetch pair and intervening half-mask copy.
+static void otherworldRetailIntensityContract(WorldRendererD3D11& renderer,unsigned scale) {
+    constexpr uint32_t width=32,height=16;
+    constexpr double nearPlane=1.8,farPlane=5000;
+    // Model the two storage formats independently. Half writes round to nearest
+    // even; a format26 resolve stores /16 in UNORM16, then fetch applies +4.
+    auto halfStored=[](double value) {
+        if(value==0)return 0.0;
+        int exponent=0;std::frexp(value,&exponent);
+        const double quantum=std::ldexp(1.0,(std::max)(exponent-11,-24));
+        const double units=value/quantum;
+        double rounded=std::floor(units);const double fraction=units-rounded;
+        if(fraction>.5 || (fraction==.5 && std::fmod(rounded,2.0)!=0))++rounded;
+        return rounded*quantum;
+    };
+    auto unormFetched=[](double value) {
+        return double(float(std::round((std::clamp)(value/16,0.0,1.0)*65535)*16/65535));
+    };
+    auto geometry=otherworldQuad(false);
+    auto halfGeometry=otherworldQuad(false),compositeGeometry=otherworldQuad(false);
+    const float uv[4][2]{{0,1},{0,0},{1,0},{1,1}};
+    for(unsigned vertex=0;vertex<4;++vertex) {
+        auto* half=halfGeometry->vertices.data()+vertex*36;
+        // Upper-left half of the full viewport, sampling the entire mask.
+        put(half,std::bit_cast<uint32_t>(uv[vertex][0]-1));
+        put(half+4,std::bit_cast<uint32_t>(1-uv[vertex][1]));
+        auto* composite=compositeGeometry->vertices.data()+vertex*36;
+        for(unsigned lane=0;lane<2;++lane)
+            put(composite+20+lane*4,std::bit_cast<uint32_t>(uv[vertex][lane]*.5f));
+    }
+    auto noise=std::make_shared<ColorImage>();noise->width=noise->height=128;
+    noise->pixels.resize(128*128*4);
+    constexpr uint8_t noiseColor[]{32,97,151,229};
+    for(size_t i=0;i<noise->pixels.size();++i)noise->pixels[i]=noiseColor[i%4];
+    auto grain=otherworldDraw(geometry,"WClientMod_OW1_1",3973);
+    grain.viewport={0,0,width,height};
+    grain.textures[1]=noise;grain.textureObjects[1]={3977,0x3977000,128,128,6,0};
+    grain.fragmentConstants[0]={1.f/width,1.f/height,1.f/width,1.f/height};
+    // Exact captured env rows; the uniform scene removes noise-position
+    // dependence from the oracle without replacing reconstruction or sampling.
+    grain.fragmentConstants[1]={.22260286f,.19366449f,.15582201f,32.737038f};
+    grain.fragmentConstants[2]={1.8f,5000,.0002f,.5251557f};
+    grain.fragmentConstants[3]={10000,5001.8f,18000,9996.4f};
+    grain.fragmentConstants[4]={0,0,.9336102f,.5251557f};
+    grain.fragmentConstants[5]={-1,-0.0f,-4.371139e-8f,3368.1057f};
+    grain.fragmentConstants[6]={4.371139e-8f,-0.0f,-1,1728.0996f};
+    grain.fragmentConstants[7]={0,-1,0,-263.59442f};
+    auto copy=otherworldDraw(halfGeometry,"MRenderXenon_Attrib_TexEnvMode01",3973);
+    copy.viewport=grain.viewport;copy.material=WorldMaterial::fixed;
+    copy.options.modes[1]=4;copy.constants.vectors[10]={1,1,1,1};
+    // Mode01 with c0=0 multiplies sampled RGBA by VColor. Select the white
+    // register explicitly; the default reference points at projection row0.
+    copy.constants.references[0][2]=10;
+    auto composite=otherworldDraw(compositeGeometry,"WClientMod_OW1_2",3973);
+    composite.viewport=grain.viewport;
+    for(auto* draw:{&grain,&copy,&composite}) {
+        put(draw->attributes.data()+92,0x01100210);
+        for(auto& sampler:draw->samplers) {
+            sampler.valid=sampler.lodValid=true;
+            sampler.minLinear=sampler.magLinear=sampler.mipLinear=true;
+            sampler.address.fill(2);
+        }
+    }
+    grain.samplers[1].address.fill(0); // Captured linear-wrap noise.
+    grain.samplers[2].minLinear=grain.samplers[2].magLinear=grain.samplers[2].mipLinear=false;
+    WorldClear clear;clear.viewport=grain.viewport;clear.targets={3971,0,0,0,0};clear.flags=1;
+    WorldResolve sceneCopy;sceneCopy.targets=clear.targets;sceneCopy.viewport=clear.viewport;
+    sceneCopy.rectangle={0,0,width,height};sceneCopy.destination={3972,0x3972000,width,height,26,4};
+    sceneCopy.flags=0xF0000000;sceneCopy.exponent=-4;
+    WorldResolve maskCopy=sceneCopy;maskCopy.targets=grain.targets;
+    maskCopy.destination={3976,0x3976000,width,height,26,4};
+    grain.textureObjects[0]=composite.textureObjects[0]=sceneCopy.destination;
+    copy.textureObjects[0]=composite.textureObjects[1]=maskCopy.destination;
+    WorldClear depth;depth.targets[4]=3974;depth.viewport=grain.viewport;depth.flags=16;
+    WorldResolve depthCopy;depthCopy.targets=depth.targets;depthCopy.viewport=depth.viewport;
+    depthCopy.flags=4;depthCopy.rectangle={0,0,width,height};
+    depthCopy.destination={3975,0x3975000,width,height,23,0};
+    grain.textureObjects[2]=depthCopy.destination;
+    constexpr std::array<double,4> poison{.75,.125,.625,.875};
+    unsigned checks=0,blackCases=0,positiveCases=0,hdrCases=0;
+    for(float intensity:{.001f,.01f,.02f,.04f,.2f,2.f})for(float requestedDistance:{15.f,21.f,40.f}) {
+        clear.targets=sceneCopy.targets;clear.color={intensity,intensity,intensity,1};renderer.clear(clear);
+        require(renderer.resolve(sceneCopy),"OW1 retail intensity scene resolve rejected");
+        const double scene=unormFetched(halfStored(intensity));
+        depth.depth=float((nearPlane*farPlane/requestedDistance-nearPlane)/(farPlane-nearPlane));
+        renderer.clear(depth);
+        const auto depthBytes=renderer.readSurface(depth.targets[4],true);
+        require(depthBytes.size()==size_t(width)*height*scale*scale*4,"OW1 retail depth extent differs");
+        uint32_t packed=0;std::memcpy(&packed,depthBytes.data(),4);
+        const double storedDepth=double(float(double(packed&0xffffff)/0xffffff));
+        const double distance=nearPlane*farPlane/(nearPlane+(farPlane-nearPlane)*storedDepth);
+        const double fade=(std::clamp)((distance-16)*.1,0.0,1.0);
+        const double normalized=(std::clamp)(1-scene*double(grain.fragmentConstants[1][3]),0.0,1.0);
+        const double mask=halfStored(.1*(std::min)(1.0,4*std::pow(normalized,16))*fade);
+        const double copiedMask=halfStored(unormFetched(mask));
+        const double final=halfStored((std::max)(0.0,scene-unormFetched(copiedMask)));
+        require(renderer.resolve(depthCopy),"OW1 retail intensity depth resolve rejected");
+        clear.targets=grain.targets;clear.color={.75f,.125f,.625f,.875f};renderer.clear(clear);
+        require(renderer.draw(grain),"OW1 retail intensity grain rejected");
+        const auto maskPixels=renderer.readSurface(grain.targets[0],false);
+        require(renderer.resolve(maskCopy),"OW1 retail full mask resolve rejected");
+        // Poisoning the surface makes half-view coverage independently visible.
+        // The resolved mask remains the source of the original fixed copy.
+        renderer.clear(clear);require(renderer.draw(copy),"OW1 retail half-mask copy rejected");
+        const auto copyPixels=renderer.readSurface(copy.targets[0],false);
+        auto halfResolve=maskCopy;halfResolve.rectangle={0,0,width/2,height/2};
+        require(renderer.resolve(halfResolve),"OW1 retail partial mask resolve rejected");
+        renderer.clear(clear);require(renderer.draw(composite),"OW1 retail intensity composite rejected");
+        const auto finalPixels=renderer.readSurface(composite.targets[0],false);
+        const size_t expectedBytes=size_t(width)*height*scale*scale*8;
+        require(maskPixels.size()==expectedBytes && copyPixels.size()==expectedBytes && finalPixels.size()==expectedBytes,
+            "OW1 retail intensity color extent differs");
+        double maximumError=0;
+        for(unsigned y=0;y<height*scale;++y)for(unsigned x=0;x<width*scale;++x)for(unsigned lane=0;lane<4;++lane) {
+            const bool inHalf=x<width*scale/2 && y<height*scale/2;
+            const double expected[]{lane==3?1:mask,inHalf?(lane==3?1:copiedMask):poison[lane],lane==3?0:final};
+            const std::vector<uint8_t>* stages[]{&maskPixels,&copyPixels,&finalPixels};
+            for(unsigned stage=0;stage<3;++stage) {
+                uint16_t stored=0;std::memcpy(&stored,stages[stage]->data()+(size_t(y)*width*scale+x)*8+lane*2,2);
+                const double actual=otherworldHalf(stored),error=std::abs(actual-expected[stage]);
+                maximumError=(std::max)(maximumError,error);
+                // Smaller than one logical UNORM16 step (16/65535), so losing
+                // a resolve exponent, the half copy or an HDR lane cannot pass.
+                if((stored&0x7c00)==0x7c00 || error>.00012) {
+                    std::fprintf(stderr,"OtherworldRetailIntensity scale=%u intensity=%g depth=%g k=%g stage=%u pixel=%u,%u lane=%u actual=%.9g expected=%.9g scene=%.9g mask=%.9g final=%.9g\n",
+                        scale,intensity,distance,double(grain.fragmentConstants[1][3]),stage,x,y,lane,actual,expected[stage],scene,mask,final);
+                    require(false,"OW1 retail intensity differs from independent HDR/grain/half-copy oracle");
+                }
+                ++checks;
+            }
+        }
+        blackCases+=intensity>0 && final==0;positiveCases+=final>0;hdrCases+=final>1;
+        std::printf("OtherworldRetailIntensity: scale=%u intensity=%g depth=%g k=%g scene=%.9g mask=%.9g final=%.9g maxError=%.9g\n",
+            scale,intensity,distance,double(grain.fragmentConstants[1][3]),scene,mask,final,maximumError);
+    }
+    require(blackCases && positiveCases && hdrCases==3,"OW1 retail fixture omitted clamped shadows, positive output or HDR preservation");
+    std::printf("OtherworldRetailIntensity%u passed: %u mask/copy/final RGBA checks, 18 intensity/depth cases, retail HDR exponents and half-mask chain.\n",scale,checks);
+}
 static void otherworldContract(ID3D11Device* device,ID3D11DeviceContext* context) {
     for(unsigned scale:{1u,2u,3u}) {
         context->ClearState();WorldRendererD3D11 renderer(device,context,scale);
         otherworldCompositeContract(renderer,scale);
         otherworldGrainContract(renderer,scale);
+        otherworldRetailIntensityContract(renderer,scale);
         context->ClearState();
     }
 }

@@ -162,7 +162,7 @@ static void testScreenFade(PPCContext& ctx) {
     Fixture fixture;
     auto settings = fixture.oldSettings;
     settings.antialiasing = false;
-    settings.gammaPercent = settings.brightnessPercent = 100;
+    settings.brightnessPercent = 100;
     check(setGraphicsSettings(settings), "Cannot set neutral screen fade test presentation");
     fixture.window = CreateWindowExW(0, L"STATIC", L"Screen fade contract", WS_OVERLAPPEDWINDOW,
         0, 0, 128, 128, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);

@@ -36,6 +36,7 @@ def find_crt(root: Path) -> Path:
 
 def collect_files(root: Path, crt: Path) -> dict[str, Path]:
     files = {name: root / name for name in DOCUMENTS}
+    files['tools/add_steam_shortcut.py'] = root / 'tools/add_steam_shortcut.py'
     for name in LINUX_SETUP_TOOLS:
         files[f'tools/{name}'] = root / 'tools' / name
     for name in BINARIES:

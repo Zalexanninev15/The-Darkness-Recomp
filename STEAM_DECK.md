@@ -155,6 +155,33 @@ run, use `PROTON_LOG=1 bash Launch.sh`; retain the Proton log and the game's
 This launcher does not establish verified Steam Deck gameplay or performance.
 Use Steam's shortcut method above when you want Steam Input and Gaming Mode.
 
+## Optional shortcut helper
+
+The release includes `tools/add_steam_shortcut.py`. Python 3 is needed only for
+this optional helper; the manual Steam steps above do not require it. The
+helper discovers standard Linux and Flatpak Steam user folders as well as
+Windows Steam installations, and targets the same EXE and `--sound` option.
+
+Close Steam completely before running the helper, because Steam writes
+`shortcuts.vdf` when it exits. Preview the entry first:
+
+```sh
+python3 tools/add_steam_shortcut.py --dry-run
+```
+
+Then run it without `--dry-run` to add the entry and restart Steam. If multiple
+Steam users exist, pass one user's file explicitly:
+
+```sh
+python3 tools/add_steam_shortcut.py "$HOME/.local/share/Steam/userdata/USER_ID/config/shortcuts.vdf"
+```
+
+Replace `USER_ID` with the numeric folder for your Steam user. The helper
+preserves existing entries and keeps an initial `.bak` backup. Select Proton in
+the shortcut's Compatibility properties after adding it. `--root /path/to/game`
+can target an extracted release elsewhere; `--steam-userdata /path/to/userdata`
+can select another Steam installation.
+
 ## If launch fails
 
 Enable Proton logging for one diagnostic run with:

@@ -9,10 +9,24 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-from compile_world_fragment import ASSETS, VARIANTS, compile_source, compile_fixed, select_template
+from compile_world_fragment import ASSETS, VARIANTS, compile_source, compile_fixed, compile_template, select_template
 
 
 class WorldFragmentTests(unittest.TestCase):
+    def test_water_variants_keep_reflection_refraction_and_fog(self):
+        directory = ROOT / 'Darkness/System/Gl/ARB_fragment_program'
+        includes = {'Include_XREngine_Fog.fph': (directory / 'Include_XREngine_Fog.fph').read_text(encoding='latin-1')}
+        for name in ('VBOp_FP20_Water', 'VBOp_FP20_CubeWater', 'VBOp_FP20_Water2', 'VBOp_FP20_CubeWater2'):
+            source = (directory / (name + '.fp')).read_text(encoding='latin-1')
+            for flags in VARIANTS[name]:
+                code, metadata = compile_source(select_template(source, flags, includes))
+                slots = {0: 'CUBE' if 'Cube' in name else '2D', 1: '2D', 2: '2D', 4: '2D'}
+                if flags & 2: slots[7] = 'CUBE'
+                if flags & 4: slots[6] = '2D'
+                self.assertEqual(metadata['textures'], slots)
+                self.assertIn('texture4.Sample(', code)
+                self.assertNotIn('@', code)
+
     def test_decals_preserve_projection_kills_lights_and_high_constants(self):
         directory = ROOT / 'Darkness/System/Gl/ARB_fragment_program'
         source = (directory / 'XRShader_FP20_Decal.fp').read_text(encoding='latin-1')
@@ -140,6 +154,54 @@ END''')
             self.assertEqual(code.count('texture0.Sample('), 1)
             self.assertEqual(1 in metadata['textures'], bool(flags & 8))
             self.assertEqual(2 in metadata['textures'], bool(flags & 4))
+
+    def test_color_lookup_coordinates_change_only_the_two_named_consumers(self):
+        directory = ROOT / 'Darkness/System/Gl/ARB_fragment_program'
+        consumers = [('XREngine_CCFuser', 2, 1)] + [
+            ('XREngine_Final5', flags, 2) for flags in range(16) if flags & 4]
+        for name, flags, slot in consumers:
+            with self.subTest(name=name, flags=flags):
+                source = (directory / (name + '.fp')).read_text(encoding='latin-1')
+                original, original_metadata = compile_source(select_template(source, flags))
+                code, metadata = compile_template(source, name, flags)
+                self.assertEqual(metadata, original_metadata)
+                self.assertIn('cbuffer NativeColorLookup : register(b3)', code)
+                self.assertIn('float inverseLookupScale;\n    uint logicalLookupMask;\n    uint2 lookupPadding;', code)
+                self.assertIn('if ((logicalLookupMask & (1u << slot)) == 0) return uv;', code)
+                self.assertIn('float2 logicalSize = float2(324.0, 18.0);', code)
+                self.assertIn('float2 p = uv * logicalSize - 0.5;', code)
+                self.assertIn('float2 i = floor(p);\n    float2 f = frac(p);', code)
+                self.assertIn('return (i + 1.0 + (f - 0.5) * inverseLookupScale) / logicalSize;', code)
+                self.assertEqual(code.count(f'texture{slot}.Sample('), 2)
+                corrected = f'nativeColorLookupUv((r2).xy, {slot})'
+                self.assertEqual(code.count(corrected), 2)
+                self.assertIn(f'texture{slot}.Sample(sampler{slot}, {corrected}) * sampleScale[{slot}]', code)
+                # Strip only the host helper and its two coordinate wrappers.
+                # Every original sample, address mode, exponent multiply,
+                # masked instruction and blue-slice interpolation must survive.
+                begin = code.index('cbuffer NativeColorLookup')
+                end = code.index('struct Fragment', begin)
+                restored = (code[:begin] + code[end:]).replace(corrected, '(r2).xy')
+                self.assertEqual(restored, original)
+
+    def test_non_lookup_generated_sources_remain_byte_identical(self):
+        directory = ROOT / 'Darkness/System/Gl/ARB_fragment_program'
+        includes = {Path(name).name: (ROOT / 'Darkness' / name).read_text(encoding='latin-1')
+                    for name in ASSETS if name.endswith('.fph')}
+        for name, variants in VARIANTS.items():
+            source = (directory / (name + '.fp')).read_text(encoding='latin-1')
+            for flags in variants:
+                if (name == 'XREngine_CCFuser' and flags == 2 or
+                        name == 'XREngine_Final5' and flags & 4):
+                    continue
+                with self.subTest(name=name, flags=flags):
+                    self.assertEqual(compile_template(source, name, flags, includes),
+                                     compile_source(select_template(source, flags, includes)))
+        # An identical instruction stream under another name cannot opt in.
+        for name, flags in (('XREngine_CCFuser', 2), ('XREngine_Final5', 4)):
+            source = (directory / (name + '.fp')).read_text(encoding='latin-1')
+            self.assertEqual(compile_template(source, name + '_other', flags),
+                             compile_source(select_template(source, flags)))
 
     def test_shadow_projector_uses_logical_texel_filter_at_native_scale(self):
         source = (ROOT / 'Darkness/System/Gl/ARB_fragment_program/XREngine_ShadowProj.fp').read_text(encoding='latin-1')
